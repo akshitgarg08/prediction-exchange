@@ -1,55 +1,64 @@
 // frontend/src/store/useMarketStore.js
 import { create } from 'zustand';
-import { io } from 'socket.io-client';
 
 const API_URL = 'http://localhost:8080';
 
 export const useMarketStore = create((set, get) => ({
-  socket: null,
-  orderBook: { bids: [], asks: [] },
-  lastPrice: null,
+  markets: [],
+  activeMarket: null,
+  prices: { yes: 0.5, no: 0.5 },
+  pollingInterval: null,
 
-  // 1. Connect to the live market stream
-  connectToMarket: (marketId) => {
-    // Prevent duplicate connections
-    if (get().socket) return;
-
-    const socket = io(API_URL);
-    
-    socket.on('connect', () => {
-      console.log('Connected to market stream!');
-      socket.emit('joinMarket', marketId);
-    });
-
-    // Listen for order book updates from our backend
-    socket.on('orderBookUpdate', () => {
-      get().fetchOrderBook(marketId);
-    });
-
-    socket.on('marketResolved', ({ outcome }) => {
-      alert(`Market Resolved! The winner is ${outcome}.`);
-    });
-
-    set({ socket });
-  },
-
-  // 2. Fetch the current Order Book
-  fetchOrderBook: async (marketId) => {
+  // Fetch all markets and set the first one as active
+  fetchMarkets: async () => {
     try {
-      const response = await fetch(`${API_URL}/markets/${marketId}/orderbook?outcome=YES`);
-      const data = await response.json();
-      set({ orderBook: data });
+      const res = await fetch(`${API_URL}/markets`);
+      const data = await res.json();
+      if (!Array.isArray(data) || data.length === 0) return;
+
+      const active = data[0];
+      set({
+        markets: data,
+        activeMarket: active,
+        prices: active.prices ?? { yes: 0.5, no: 0.5 },
+      });
     } catch (error) {
-      console.error("Failed to fetch order book:", error);
+      console.error('Failed to fetch markets:', error);
     }
   },
 
-  // 3. Clean up when leaving the page
-  disconnect: () => {
-    const socket = get().socket;
-    if (socket) {
-      socket.disconnect();
-      set({ socket: null, orderBook: { bids: [], asks: [] } });
+  // Fetch the latest AMM price for the active market
+  refreshPrice: async () => {
+    const { activeMarket } = get();
+    if (!activeMarket) return;
+
+    try {
+      const res = await fetch(`${API_URL}/markets/${activeMarket.id}/price`);
+      const data = await res.json();
+      if (data.prices) set({ prices: data.prices });
+    } catch (error) {
+      console.error('Failed to refresh price:', error);
     }
-  }
+  },
+
+  // Start polling for price updates every 5 seconds
+  startPolling: () => {
+    const existing = get().pollingInterval;
+    if (existing) return;
+
+    const id = setInterval(() => {
+      get().refreshPrice();
+    }, 5000);
+
+    set({ pollingInterval: id });
+  },
+
+  // Stop polling and clean up
+  stopPolling: () => {
+    const id = get().pollingInterval;
+    if (id) {
+      clearInterval(id);
+      set({ pollingInterval: null });
+    }
+  },
 }));
